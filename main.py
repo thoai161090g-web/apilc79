@@ -7,15 +7,14 @@ import json
 
 app = Flask(__name__)
 
-# Token API của mày
 API_URL = "https://wtxmd52.tele68.com/v1/txmd5/lite-sessions?cp=R&cl=R&pf=web&at=3959701241b686f12e01bfe9c3a319b8"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json"
 }
 
-# Lưu trữ lịch sử
-FAKE_DB = []
+# Lưu lịch sử dự đoán (tối đa 50 phiên)
+LICH_SU_DU_DOAN = []
 IS_RUNNING = True
 
 def get_history():
@@ -28,7 +27,7 @@ def get_history():
         return []
 
 def kiem_tra_diem(diem, xuc_xac, cua_truoc):
-    # Bảng tra của mày
+    # Bảng tra tổng điểm
     if diem == 3: return "XỈU"
     if diem in [4, 5]: return "XỈU"
     if diem == 6: return ("TÀI") if sorted(xuc_xac) in [[1,2,3], [1,1,4]] else ("XỈU")
@@ -51,7 +50,7 @@ def kiem_tra_diem(diem, xuc_xac, cua_truoc):
     return cua_truoc
 
 def phan_tich_cau(history):
-    if len(history) < 15: return "TÀI"
+    if len(history) < 15: return "TÀI", 50
     
     recent = history[:15][::-1]
     results = [h["resultTruyenThong"] for h in recent]
@@ -61,23 +60,24 @@ def phan_tich_cau(history):
     last_res = "TÀI" if results[-1] == "TAI" else "XỈU"
     last_point = points[-1]
     last_dices = dices[-1]
+    
+    do_tin_cay = 65 # Mặc định
 
-    # Mẹo cầu
-    if results[-3:] == ["XIU", "XIU", "XIU"]: return "TÀI"
-    if results[-3:] == ["TAI", "TAI", "TAI"]: return "XỈU"
-    if results[-4:] in [["XIU", "TAI", "XIU", "TAI"], ["TAI", "XIU", "TAI", "XIU"]]: return last_res
-    if set(points[-3:]).issubset({7, 9, 10}) and len(set(results[-3:])) > 1: return "TÀI" if last_res == "XỈU" else "XỈU"
-    if str(points[-2]) + str(points[-1]) in ["1011", "1110", "89", "98"]: return "TÀI" if last_res == "XỈU" else "XỈU"
-    if len(set(points[-5:-1])) == 1 and points[-1] != points[-2]: return "TÀI" if last_res == "XỈU" else "XỈU"
+    if results[-3:] == ["XIU", "XIU", "XIU"]: return "TÀI", 65
+    if results[-3:] == ["TAI", "TAI", "TAI"]: return "XỈU", 65
+    if results[-4:] in [["XIU", "TAI", "XIU", "TAI"], ["TAI", "XIU", "TAI", "XIU"]]: return last_res, 60
+    if set(points[-3:]).issubset({7, 9, 10}) and len(set(results[-3:])) > 1: return ("TÀI" if last_res == "XỈU" else "XỈU"), 75
+    if str(points[-2]) + str(points[-1]) in ["1011", "1110", "89", "98"]: return ("TÀI" if last_res == "XỈU" else "XỈU"), 80
+    if len(set(points[-5:-1])) == 1 and points[-1] != points[-2]: return ("TÀI" if last_res == "XỈU" else "XỈU"), 61
     count_tai = results[-5:].count("TAI")
-    if count_tai in [3, 4] and count_tai - results[-5:].count("XIU") > 0: return "XỈU"
+    if count_tai in [3, 4] and count_tai - results[-5:].count("XIU") > 0: return "XỈU", 86
 
-    du_doan = kiem_tra_diem(last_point, last_dices, last_res)
-    if du_doan == "BỎ": return last_res
-    return du_doan
+    du_doan_bang = kiem_tra_diem(last_point, last_dices, last_res)
+    if du_doan_bang == "BỎ": return last_res, 50
+    return du_doan_bang, 70
 
 def bot_chay_ngam():
-    global FAKE_DB
+    global LICH_SU_DU_DOAN
     last_id = None
     
     while IS_RUNNING:
@@ -90,52 +90,89 @@ def bot_chay_ngam():
         if history:
             current_id = history[0]["id"]
             
-            # Cập nhật kết quả thực tế cho phiên trước đó
-            for item in FAKE_DB:
+            # Cập nhật kết quả cho phiên trước đó trong lịch sử
+            for item in LICH_SU_DU_DOAN:
                 if item["phien"] == str(current_id) and item["ket_qua"] == "running...":
                     actual_res = history[0]["resultTruyenThong"]
                     item["ket_qua"] = "TÀI" if actual_res == "TAI" else "XỈU"
-                    item["xac_minh"] = "Đúng" if item["du_doan"] == item["ket_qua"] else "Sai"
+                    item["xac_minh"] = "✅" if item["du_doan"] == item["ket_qua"] else "❌"
 
-            # Thêm phiên mới
             if current_id != last_id:
                 last_id = current_id
-                du_doan = phan_tich_cau(history)
+                du_doan, tin_cay = phan_tich_cau(history)
                 
                 phien_moi = {
-                    "game": "LC79 MD5",
                     "phien": str(current_id + 1),
-                    "thoi_gian": datetime.datetime.now().strftime("%H:%M:%S"),
                     "du_doan": du_doan,
+                    "do_tin_cay": f"{tin_cay}%",
                     "ket_qua": "running...",
                     "xac_minh": "Chờ..."
                 }
-                FAKE_DB.insert(0, phien_moi)
-                if len(FAKE_DB) > 30: FAKE_DB.pop()
+                LICH_SU_DU_DOAN.insert(0, phien_moi)
                 
-        time.sleep(10) # Quét API mỗi 10s
+                # Chỉ giữ 50 phiên
+                if len(LICH_SU_DU_DOAN) > 50: LICH_SU_DU_DOAN.pop()
+                
+        time.sleep(10)
 
 @app.route('/')
 def home():
-    return "API đang chạy. Mở /api để xem kết quả."
+    return "API LC79 đang chạy. Xem /api hoặc /thongke"
 
 @app.route('/api')
 def api_json():
-    thang = sum(1 for item in FAKE_DB if item["xac_minh"] == "Đúng")
-    thua = sum(1 for item in FAKE_DB if item["xac_minh"] == "Sai")
-    ti_le = round((thang / (thang + thua) * 100), 1) if (thang + thua) > 0 else 0.0
+    history = get_history()
+    if not history:
+        return jsonify({"error": "Không lấy được dữ liệu từ API gốc"})
+
+    # Lấy phiên vừa xong (gần nhất) và dự đoán phiên tới
+    current_id = history[0]["id"]
+    actual_res = history[0]["resultTruyenThong"]
+    point = history[0]["point"]
+    dices = history[0]["dices"]
     
-    # Trả về đúng cấu trúc yêu cầu, ép hiển thị tiếng Việt có dấu chuẩn
+    du_doan, tin_cay = phan_tich_cau(history)
+    
     data = {
-        "game": "LC79 MD5",
-        "typeStat": {
-            "Thắng": thang,
-            "Thua": thua,
-            "Tỉ lệ": f"{ti_le}%"
+        "phien_truoc": {
+            "phien": current_id,
+            "ket_qua": "TÀI" if actual_res == "TAI" else "XỈU",
+            "xuc_xac": dices,
+            "tong_diem": point
         },
-        "list": FAKE_DB
+        "phien_nay": {
+            "phien": current_id + 1,
+            "du_doan": du_doan,
+            "do_tin_cay": f"{tin_cay}%"
+        }
     }
-    return Response(json.dumps(data, ensure_ascii=False), mimetype='application/json')
+    return Response(json.dumps(data, ensure_ascii=False), mimetype='application/json; charset=utf-8')
+
+@app.route('/thongke')
+def thongke_json():
+    # Gọi API để cập nhật trạng thái mới nhất trước khi trả kết quả
+    history = get_history()
+    if history:
+        current_id = history[0]["id"]
+        for item in LICH_SU_DU_DOAN:
+            if item["phien"] == str(current_id) and item["ket_qua"] == "running...":
+                actual_res = history[0]["resultTruyenThong"]
+                item["ket_qua"] = "TÀI" if actual_res == "TAI" else "XỈU"
+                item["xac_minh"] = "✅" if item["du_doan"] == item["ket_qua"] else "❌"
+
+    thang = sum(1 for item in LICH_SU_DU_DOAN if item["xac_minh"] == "✅")
+    thua = sum(1 for item in LICH_SU_DU_DOAN if item["xac_minh"] == "❌")
+    ti_le = round((thang / (thang + thua) * 100), 1) if (thang + thua) > 0 else 0.0
+
+    data = {
+        "thong_ke_50_phien": {
+            "Thang": thang,
+            "Thua": thua,
+            "Ti_le": f"{ti_le}%"
+        },
+        "lich_su": LICH_SU_DU_DOAN
+    }
+    return Response(json.dumps(data, ensure_ascii=False), mimetype='application/json; charset=utf-8')
 
 if __name__ == "__main__":
     threading.Thread(target=bot_chay_ngam, daemon=True).start()
